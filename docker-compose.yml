@@ -1,0 +1,32 @@
+version: '3.8'
+name: dify  # 指定 Stack 名称，即项目名称，这里归为dify项目，不指定就是当前文件夹的名称
+services:
+  markmap-service:
+    build:
+      context: .  # 使用当前目录作为构建上下文
+      dockerfile: Dockerfile  # 指定 Dockerfile 路径
+    container_name: markmap-service  # 容器名称
+    # ports:
+    #   - "3000:3000"  # 将容器端口 3000 映射到主机端口 3000
+    expose:
+      - "3000"  # 暴露容器端口 3000
+    volumes:
+      - ../:/app  # 挂载本地代码目录到容器中（方便开发调试）,挂载父目录方便输出文件保存在output文件夹
+    environment:
+      - NODE_ENV=production  # 设置环境变量
+    restart: always  # 容器崩溃时自动重启
+
+    # 这里因为挂载目录是在容器启动时也就是docker compose up时挂载的，而且会覆盖dockerfile中的同名目录，
+    # 而Dockerfile中npm install是在容器构建时安装依赖，也就是docker compose build时安装依赖, 
+    # 这时挂载目录还不存在，会找不到package.json文件，即使安装成功，也会被覆盖掉，所以需要在容器启动时安装依赖
+    # 也就是在compose中指定命令，而不是在Dockerfile中指定命令
+    # 其他尝试用过的包 jsdom html2canvas jspdf canvas markmap-lib
+    command: >  # >符号，多行内容合并为单行，换行符会被替换为空格
+      sh -c "npm install -g markmap-cli && npm install express multer &&
+             node src/index.js"
+    networks:
+      - dify  # 使用 dify 网络
+      
+networks:
+  dify:
+    external: true  # 使用外部网络

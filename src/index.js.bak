@@ -1,0 +1,97 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
+const multer = require('multer');
+
+const app = express();
+const port = 3000;
+
+// 挂载目录路径
+const MOUNT_DIR = '/app/output/markmap';
+const HTML_DIR = path.join(MOUNT_DIR, 'html');
+
+// 确保目录存在
+fs.mkdirSync(HTML_DIR, { recursive: true });
+
+// 配置 multer 用于文件上传
+const upload = multer({ dest: '/tmp/uploads/' });
+
+app.use(express.json());
+
+// JSON 方式：传入 Markdown 文本
+app.post('/generate-markmap/json', (req, res) => {
+    const { markdown, fileType = 'html' } = req.body;
+
+    if (!markdown) {
+        return res.status(400).json({ error: '缺少 markdown 参数' });
+    }
+
+    generateMarkmap(markdown, fileType, res);
+});
+
+// 文件上传方式：传入 Markdown 文件
+app.post('/generate-markmap/upload', upload.single('markdownFile'), (req, res) => {
+    const { fileType = 'html' } = req.body;
+
+    if (!req.file) {
+        return res.status(400).json({ error: '未上传文件' });
+    }
+
+    // 读取上传的 Markdown 文件内容
+    const markdown = fs.readFileSync(req.file.path, 'utf8');
+
+    // 删除临时文件
+    fs.unlinkSync(req.file.path);
+
+    generateMarkmap(markdown, fileType, res);
+});
+
+// 生成 Markmap 的逻辑
+function generateMarkmap(markdown, fileType, res) {
+    // 生成唯一的文件名
+    const fileName = `markmap_${Date.now()}`;
+    const tempFilePath = path.join('/tmp', `${fileName}.md`);
+    const htmlFilePath = path.join(HTML_DIR, `${fileName}.html`);
+
+    // 将 Markdown 写入临时文件
+    fs.writeFileSync(tempFilePath, markdown);
+
+    // 根据 fileType 生成文件
+    const tasks = [];
+
+    if (fileType === 'html') {
+        tasks.push(
+            new Promise((resolve, reject) => {
+                exec(`markmap ${tempFilePath} -o ${htmlFilePath}`, (error) => {
+                    if (error) reject({ type: 'html', error });
+                    else resolve();
+                });
+            })
+        );
+    }
+
+    // 执行所有任务
+    Promise.all(tasks)
+        .then(() => {
+            // 删除临时 Markdown 文件
+            fs.unlinkSync(tempFilePath);
+
+            // 返回 Markdown 文本，嵌入静态文件地址
+            const resultMarkdown = [];
+            if (fileType === 'html') {
+                resultMarkdown.push(`- **HTML 格式**: [查看 Markmap HTML](http://localhost:8000/mind-html/${fileName}.html)`);
+            }
+
+            res.json({
+                markdown: `## Markmap\n\n${resultMarkdown.join('\n')}`,
+            });
+        })
+        .catch((err) => {
+            res.status(500).json({ error: `生成 ${err.type} 时出错`, details: err.error.message });
+        });
+}
+
+app.listen(port, () => {
+    console.log(`服务已启动，访问 http://localhost:8000/generate-markmap/json 或 http://localhost:8000/generate-markmap/upload`);
+});
