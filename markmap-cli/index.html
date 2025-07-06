@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Markmap Example</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+        }
+        #markMap {
+            width: 100%;
+            height: 100vh; /* 全屏高度 */
+            background-color: transparent; /* 确保 SVG 背景透明 */
+        }
+        #controls {
+            position: fixed;
+            top: 10px;
+            left: 10px; /* 保持在左上方 */
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.8); /* 半透明背景 */
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #export-buttons {
+            position: fixed;
+            top: 10px;
+            right: 10px; /* 改为右上方 */
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.8); /* 半透明背景 */
+            padding: 10px;
+            border-radius: 5px;
+            display: flex;
+            flex-direction: column; /* 竖着排列 */
+            gap: 5px; /* 按钮之间的间距 */
+        }
+        #toolbar-container {
+            position: fixed;
+            top: 50px;
+            left: 10px; /* 改为左上方 */
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            display: flex;
+            flex-direction: row; /* 横向排列 */
+            gap: 5px; /* 按钮之间的间距 */
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <input type="file" id="file-input" accept=".md">
+    </div>
+    <div id="export-buttons">
+        <button id="export-png">Export PNG</button>
+        <button id="export-jpg">Export JPG</button>
+        <button id="export-pdf">Export PDF</button>
+    </div>
+    <div id="toolbar-container"></div>
+    <svg id="markMap"></svg>
+
+    <!-- 引入依赖 -->
+    <script src="https://cdn.jsdelivr.net/npm/d3@6"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-lib"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-view"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-toolbar"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+    <script>
+        const { Transformer } = window.markmap;
+        const { markmap } = window;
+        const { Toolbar } = window.markmap;
+
+        class MarkmapRenderer {
+            constructor(containerId) {
+                this.containerId = containerId;
+                this.mm = null;
+                this.toolbar = null;
+            }
+
+            async initXMind(markdown) {
+                try {
+                    const svgEl = document.getElementById(this.containerId);
+                    if (!svgEl) throw new Error('SVG container not found!');
+
+                    // 完全清理阶段
+                    this.cleanup();
+
+                    // 初始化SVG容器
+                    const svg = d3.select(svgEl)
+                        .attr('width', window.innerWidth)
+                        .attr('height', window.innerHeight)
+                        .attr('viewBox', `0 0 ${window.innerWidth} ${window.innerHeight}`)
+                        .style('overflow', 'visible');
+
+                    // 转换Markdown
+                    const transformer = new Transformer();
+                    const { root } = transformer.transform(markdown);
+
+                    // 创建新Markmap实例
+                    this.mm = markmap.Markmap.create(svg.node(), {
+                        duration: 0, // 禁用动画避免渲染问题
+                        zoom: true
+                    }, root);
+
+                    // 初始化工具栏
+                    this.initToolbar();
+
+                    // 强制重绘
+                    setTimeout(() => {
+                        this.mm.fit();
+                        this.mm.resize();
+                    }, 50);
+
+                } catch (error) {
+                    console.error('Initialization error:', error);
+                }
+            }
+
+            cleanup() {
+                // 销毁Markmap实例
+                if (this.mm) {
+                    this.mm.destroy();
+                    this.mm = null;
+                }
+
+                // 完全移除工具栏
+                if (this.toolbar) {
+                    this.toolbar.remove();
+                    this.toolbar = null;
+                }
+
+                // 清理工具栏容器
+                const toolbarContainer = document.getElementById('toolbar-container');
+                if (toolbarContainer) {
+                    toolbarContainer.innerHTML = '';
+                }
+
+                // 清理SVG容器
+                const svgEl = document.getElementById(this.containerId);
+                if (svgEl) {
+                    d3.select(svgEl)
+                        .selectAll('*')
+                        .remove();
+                    svgEl.removeAttribute('style');
+                    svgEl.removeAttribute('viewBox');
+                }
+            }
+
+            async loadAssets(styles, scripts) {
+                if (styles) markmap.loadCSS(styles);
+                if (scripts) await markmap.loadJS(scripts, { getMarkmap: () => markmap });
+            }
+
+            initToolbar() {
+                const toolbarContainer = document.getElementById('toolbar-container');
+                
+                // 初始化工具栏
+                this.toolbar = new Toolbar();
+                this.toolbar.setBrand(false);
+                toolbarContainer.appendChild(this.toolbar.render());
+                
+                this.toolbar.attach(this.mm);
+                this.toolbar.setItems(['zoomIn', 'zoomOut', 'fit']);
+            }
+
+            async exportImage(type) {
+                try {
+                    const svg = document.querySelector(`#${this.containerId}`);
+                    if (!svg) throw new Error('SVG container not found!');
+
+                    const canvas = await this.svgToCanvas(svg, type);
+
+                    if (type === 'png' || type === 'jpg') {
+                        this.downloadImage(canvas, type);
+                    } else if (type === 'pdf') {
+                        this.downloadPDF(canvas);
+                    }
+                } catch (error) {
+                    console.error('Failed to export:', error);
+                }
+            }
+
+            async svgToCanvas(svg, type) {
+                // 处理外链图片
+                const images = svg.querySelectorAll('image');
+                const imagePromises = Array.from(images).map(async (image) => {
+                    const href = image.getAttribute('href') || image.getAttribute('xlink:href');
+                    if (href) {
+                        const base64 = await this.loadImageAsBase64(href);
+                        image.setAttribute('href', base64); // 将外链图片替换为 Base64
+                    }
+                });
+
+                // 等待所有图片加载完成
+                await Promise.all(imagePromises);
+
+                // 将 SVG 转换为 Canvas
+                const svgString = new XMLSerializer().serializeToString(svg);
+                const img = new Image();
+                img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgString)));
+                await new Promise((resolve) => (img.onload = resolve));
+
+                const scale = 4; // 放大倍数
+                const canvas = document.createElement('canvas');
+                canvas.width = svg.clientWidth * scale;
+                canvas.height = svg.clientHeight * scale;
+                const ctx = canvas.getContext('2d');
+
+                // 填充背景为白色（仅用于 JPG 导出）
+                if (type === 'jpg') {
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                }
+
+                // 绘制 SVG 图像
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                return canvas;
+            }
+
+            async loadImageAsBase64(url) {
+                const response = await fetch(url);
+                const blob = await response.blob();
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+            }
+
+            downloadImage(canvas, type) {
+                const mimeType = type === 'png' ? 'image/png' : 'image/jpeg';
+                const link = document.createElement('a');
+                link.href = canvas.toDataURL(mimeType, 1.0); // 设置质量为 1.0
+                link.download = `markmap-export.${type}`;
+                link.click();
+            }
+
+            downloadPDF(canvas) {
+                const pdf = new window.jspdf.jsPDF('p', 'pt', 'a4');
+                const imgData = canvas.toDataURL('image/png'); // 使用 PNG 格式
+                const imgWidth = pdf.internal.pageSize.getWidth();
+                const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+                pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
+                pdf.save('markmap-export.pdf');
+            }
+        }
+
+        // 绑定文件上传事件
+        document.querySelector('#file-input').addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const markdown = e.target.result;
+                    // 重新创建 MarkmapRenderer 实例
+                    const renderer = new MarkmapRenderer('markMap');
+                    renderer.cleanup(); // 清理之前的内容
+                    renderer.initXMind(markdown);
+                    
+                    // 移除之前的导出按钮事件监听器
+                    document.querySelector('#export-png').replaceWith(document.querySelector('#export-png').cloneNode(true));
+                    document.querySelector('#export-jpg').replaceWith(document.querySelector('#export-jpg').cloneNode(true));
+                    document.querySelector('#export-pdf').replaceWith(document.querySelector('#export-pdf').cloneNode(true));
+
+                    // 绑定新的导出按钮事件
+                    document.querySelector('#export-png').addEventListener('click', () => {
+                        renderer.exportImage('png');
+                    });
+
+                    document.querySelector('#export-jpg').addEventListener('click', () => {
+                        renderer.exportImage('jpg');
+                    });
+
+                    document.querySelector('#export-pdf').addEventListener('click', () => {
+                        renderer.exportImage('pdf');
+                    });
+                };
+                reader.readAsText(file);
+            }
+        });
+    </script>
+</body>
+</html>
