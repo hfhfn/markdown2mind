@@ -22,8 +22,8 @@ const upload = multer({dest: '/tmp/uploads/'});
 
 app.use(express.json());
 
-// 新增：静态资源路由（用于提供本地化的 JS 文件）
-app.use('/markmap/libs', express.static(LIBS_DIR));
+// 注释掉静态资源路由，因为现在使用相对路径访问本地文件
+// app.use('/markmap/libs', express.static(LIBS_DIR));
 
 // JSON 方式：传入 Markdown 文本
 app.post('/markmap/json', async (req, res) => {
@@ -59,6 +59,7 @@ async function generateMarkmap(markdown, fileType, res) {
     const fileName = `markmap_${Date.now()}`;
     const tempFilePath = path.join('/tmp', `${fileName}.md`);
     const htmlFilePath = path.join(HTML_DIR, `${fileName}.html`);
+    const sharedLibsDir = path.join(HTML_DIR, 'libs');
 
     // 1. 将 Markdown 写入临时文件
     fs.writeFileSync(tempFilePath, markdown);
@@ -68,37 +69,68 @@ async function generateMarkmap(markdown, fileType, res) {
     // 删除临时 Markdown 文件
     fs.unlinkSync(tempFilePath);
 
-    // 3. 读取生成的 HTML
+    // 3. 确保共享的libs目录存在，并复制静态资源（只在第一次时复制）
+    if (!fs.existsSync(sharedLibsDir)) {
+        fs.mkdirSync(sharedLibsDir, {recursive: true});
+
+        // 复制所有静态资源到共享libs目录
+        const resourceFiles = [
+            'd3.min.js',
+            'markmap-view.js',
+            'markmap-toolbar.js',
+            'markmap-toolbar.css',
+            'highlightjs-default.css'
+        ];
+
+        resourceFiles.forEach(fileName => {
+            const sourceFilePath = path.join(LIBS_DIR, fileName);
+            const targetFilePath = path.join(sharedLibsDir, fileName);
+
+            if (fs.existsSync(sourceFilePath)) {
+                fs.copyFileSync(sourceFilePath, targetFilePath);
+                console.log(`已复制静态资源: ${fileName}`);
+            } else {
+                console.warn(`警告: 本地资源文件不存在: ${sourceFilePath}`);
+            }
+        });
+    }
+
+    // 4. 读取生成的 HTML
     let html = fs.readFileSync(htmlFilePath, 'utf8');
 
-    // 4. 判断本地是否存在对应资源， 从而替换 CDN 资源为本地路径
-    const replaceResource = (html, cdnUrl, localPath) => {
-        const localFullPath = path.join(LIBS_DIR, localPath);
-        if (fs.existsSync(localFullPath)) {
-            // 本地存在资源，替换为本地路径
-            const regex = new RegExp(cdnUrl.replace(/[.*+?^${}()|[$$\$$\/\\]/g, '\\$&'), 'g');
-            return html.replace(regex, `/markmap/libs/${localPath}`);
-        } else {
-            // 本地不存在资源，保留 CDN 路径
-            return html;
-        }
+    // 5. 替换CDN资源为本地路径，同时支持文件和HTTP访问
+    const replaceCdnWithLocal = (html, cdnUrl, localFileName) => {
+        const regex = new RegExp(cdnUrl.replace(/[.*+?^${}()|[$$\$$\/\\]/g, '\\$&'), 'g');
+        return html.replace(regex, `libs/${localFileName}`);
     };
 
-    html = replaceResource(html, 'https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js', 'd3.min.js');
-    html = replaceResource(html, 'https://cdn.jsdelivr.net/npm/markmap-view@0.18.12/dist/browser/index.js', 'markmap-view.js');
-    html = replaceResource(html, 'https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/index.js', 'markmap-toolbar.js');
-    html = replaceResource(html, 'https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/style.css', 'markmap-toolbar.css');
-    html = replaceResource(html, 'https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/styles/default.min.css', 'highlightjs-default.css');
+    html = replaceCdnWithLocal(html, 'https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js', 'd3.min.js');
+    html = replaceCdnWithLocal(html, 'https://cdn.jsdelivr.net/npm/markmap-view@0.18.12/dist/browser/index.js', 'markmap-view.js');
+    html = replaceCdnWithLocal(html, 'https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/index.js', 'markmap-toolbar.js');
+    html = replaceCdnWithLocal(html, 'https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/style.css', 'markmap-toolbar.css');
+    html = replaceCdnWithLocal(html, 'https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/styles/default.min.css', 'highlightjs-default.css');
 
-    // // 5. 移除被 CSP 拦截的非必要资源（如 Toolbar CSS），这里全部替换本地资源，不做移除
-    // html = html.replace(/<link[^>]*markmap-toolbar[^>]*>/, '');
-    // html = html.replace(/<link[^>]*highlightjs[^>]*>/, '');
+    // 在HTML头部添加base标签来处理相对路径
+    html = html.replace('<head>', `<head>
+    <script>
+        // 动态设置base路径以支持不同的访问方式
+        (function() {
+            if (window.location.protocol === 'file:') {
+                // 文件协议：使用相对路径
+                document.write('<base href="' + window.location.href.replace(/[^/]*$/, '') + '">');
+            } else {
+                // HTTP协议：使用绝对路径
+                document.write('<base href="/mind-html/">');
+            }
+        })();
+    </script>`);
 
     // 6. 写回修改后的 HTML
     fs.writeFileSync(htmlFilePath, html);
 
     res.json({
-        markdown: `[查看 Markmap HTML](http://localhost/mind-html/${fileName}.html)`
+        markdown: `[查看 Markmap HTML](http://localhost/mind-html/${fileName}.html)`,
+        note: `HTML文件已生成，使用共享的静态资源，可以直接在浏览器中打开: ${htmlFilePath}`
     });
 }
 
