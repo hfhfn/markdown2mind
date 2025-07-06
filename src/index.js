@@ -44,30 +44,55 @@ app.post('/markmap/upload', upload.single('markdownFile'), async (req, res) => {
         return res.status(400).json({error: '未上传文件'});
     }
 
-    // 读取上传的 Markdown 文件内容
-    const markdown = fs.readFileSync(req.file.path, 'utf8');
-
-    // 删除临时文件
-    fs.unlinkSync(req.file.path);
-
-    await generateMarkmap(markdown, fileType, res);
+    // 直接使用上传的临时文件，不需要重复读写
+    await generateMarkmapFromFile(req.file.path, fileType, res);
 });
 
-// 生成 Markmap 的逻辑（修改后）
+// 生成 Markmap 的逻辑（从Markdown内容）
 async function generateMarkmap(markdown, fileType, res) {
     // 生成唯一的文件名
     const fileName = `markmap_${Date.now()}`;
     const tempFilePath = path.join('/tmp', `${fileName}.md`);
     const htmlFilePath = path.join(HTML_DIR, `${fileName}.html`);
+
+    try {
+        // 1. 将 Markdown 写入临时文件
+        fs.writeFileSync(tempFilePath, markdown);
+
+        // 2. 调用通用处理函数
+        await processMarkmapFile(tempFilePath, htmlFilePath, fileName, fileType, res, true);
+    } catch (error) {
+        console.error('生成 Markmap 时出错:', error);
+        res.status(500).json({error: '生成 Markmap 失败', details: error.message});
+    }
+}
+
+// 生成 Markmap 的逻辑（从文件路径）
+async function generateMarkmapFromFile(filePath, fileType, res) {
+    // 生成唯一的文件名
+    const fileName = `markmap_${Date.now()}`;
+    const htmlFilePath = path.join(HTML_DIR, `${fileName}.html`);
+
+    try {
+        // 直接使用已存在的文件
+        await processMarkmapFile(filePath, htmlFilePath, fileName, fileType, res, true);
+    } catch (error) {
+        console.error('生成 Markmap 时出错:', error);
+        res.status(500).json({error: '生成 Markmap 失败', details: error.message});
+    }
+}
+
+// 通用的 Markmap 文件处理函数
+async function processMarkmapFile(tempFilePath, htmlFilePath, fileName, fileType, res, shouldDeleteTemp) {
     const sharedLibsDir = path.join(HTML_DIR, 'libs');
 
-    // 1. 将 Markdown 写入临时文件
-    fs.writeFileSync(tempFilePath, markdown);
-
-    // 2. 使用 markmap-cli 生成原始 HTML
+    // 1. 使用 markmap-cli 生成原始 HTML
     await execPromise(`markmap ${tempFilePath} -o ${htmlFilePath}`);
-    // 删除临时 Markdown 文件
-    fs.unlinkSync(tempFilePath);
+
+    // 2. 删除临时 Markdown 文件（如果需要）
+    if (shouldDeleteTemp) {
+        fs.unlinkSync(tempFilePath);
+    }
 
     // 3. 确保共享的libs目录存在，并复制静态资源（只在第一次时复制）
     if (!fs.existsSync(sharedLibsDir)) {
@@ -98,7 +123,7 @@ async function generateMarkmap(markdown, fileType, res) {
     // 4. 读取生成的 HTML
     let html = fs.readFileSync(htmlFilePath, 'utf8');
 
-    // 5. 替换CDN资源为本地路径，同时支持文件和HTTP访问
+    // 5. 替换CDN资源为相对路径，配合动态base标签使用
     const replaceCdnWithLocal = (html, cdnUrl, localFileName) => {
         const regex = new RegExp(cdnUrl.replace(/[.*+?^${}()|[$$\$$\/\\]/g, '\\$&'), 'g');
         return html.replace(regex, `libs/${localFileName}`);
@@ -110,7 +135,7 @@ async function generateMarkmap(markdown, fileType, res) {
     html = replaceCdnWithLocal(html, 'https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/style.css', 'markmap-toolbar.css');
     html = replaceCdnWithLocal(html, 'https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/styles/default.min.css', 'highlightjs-default.css');
 
-    // 在HTML头部添加base标签来处理相对路径
+    // 6. 在HTML头部添加base标签来处理相对路径
     html = html.replace('<head>', `<head>
     <script>
         // 动态设置base路径以支持不同的访问方式
@@ -125,7 +150,7 @@ async function generateMarkmap(markdown, fileType, res) {
         })();
     </script>`);
 
-    // 6. 写回修改后的 HTML
+    // 7. 写回修改后的 HTML
     fs.writeFileSync(htmlFilePath, html);
 
     res.json({
