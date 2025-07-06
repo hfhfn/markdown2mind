@@ -27,10 +27,15 @@ app.use(express.json());
 
 // JSON 方式：传入 Markdown 文本
 app.post('/markmap/json', async (req, res) => {
-    const {markdown, fileType = 'html'} = req.body;
+    const {markdown, fileType = 'html', offline} = req.body;
 
     if (!markdown) {
         return res.status(400).json({error: '缺少 markdown 参数'});
+    }
+
+    // 设置离线模式（可通过请求参数覆盖环境变量）
+    if (offline !== undefined) {
+        process.env.MARKMAP_OFFLINE = offline ? 'true' : 'false';
     }
 
     await generateMarkmap(markdown, fileType, res);
@@ -38,10 +43,15 @@ app.post('/markmap/json', async (req, res) => {
 
 // 文件上传方式：传入 Markdown 文件
 app.post('/markmap/upload', upload.single('markdownFile'), async (req, res) => {
-    const {fileType = 'html'} = req.body;
+    const {fileType = 'html', offline} = req.body;
 
     if (!req.file) {
         return res.status(400).json({error: '未上传文件'});
+    }
+
+    // 设置离线模式（可通过请求参数覆盖环境变量）
+    if (offline !== undefined) {
+        process.env.MARKMAP_OFFLINE = offline ? 'true' : 'false';
     }
 
     // 直接使用上传的临时文件，不需要重复读写
@@ -86,15 +96,39 @@ async function generateMarkmapFromFile(filePath, fileType, res) {
 async function processMarkmapFile(tempFilePath, htmlFilePath, fileName, fileType, res, shouldDeleteTemp) {
     const sharedLibsDir = path.join(HTML_DIR, 'libs');
 
-    // 1. 使用 markmap-cli 生成原始 HTML
+    // 1. 检查是否使用离线模式（默认启用）
+    const useOfflineMode = process.env.MARKMAP_OFFLINE !== 'false'; // 环境变量控制，默认为true
+
+    if (useOfflineMode) {
+        // 离线模式：使用 --offline 参数生成完全独立的HTML文件
+        console.log(`✅ 使用离线模式生成: ${fileName}.html`);
+        await execPromise(`markmap ${tempFilePath} -o ${htmlFilePath} --offline`);
+
+        // 删除临时 Markdown 文件（如果需要）
+        if (shouldDeleteTemp) {
+            fs.unlinkSync(tempFilePath);
+        }
+
+        res.json({
+            markdown: `[查看 Markmap HTML](http://localhost/mind-html/${fileName}.html)`,
+            note: `HTML文件已生成（离线模式），所有资源已内联，可以独立使用: ${htmlFilePath}`,
+            mode: 'offline'
+        });
+        return;
+    }
+
+    // 本地资源模式：使用普通markmap命令，然后替换CDN链接
+    console.log(`📦 使用本地资源模式生成: ${fileName}.html`);
     await execPromise(`markmap ${tempFilePath} -o ${htmlFilePath}`);
 
-    // 2. 删除临时 Markdown 文件（如果需要）
+    // 删除临时 Markdown 文件（如果需要）
     if (shouldDeleteTemp) {
         fs.unlinkSync(tempFilePath);
     }
 
-    // 3. 确保共享的libs目录存在，并复制静态资源（只在第一次时复制）
+    // 本地资源模式的处理逻辑（备用方案）
+
+    // 4. 确保共享的libs目录存在，并复制静态资源（只在第一次时复制）
     if (!fs.existsSync(sharedLibsDir)) {
         fs.mkdirSync(sharedLibsDir, {recursive: true});
 
@@ -120,10 +154,10 @@ async function processMarkmapFile(tempFilePath, htmlFilePath, fileName, fileType
         });
     }
 
-    // 4. 读取生成的 HTML
+    // 5. 读取生成的 HTML
     let html = fs.readFileSync(htmlFilePath, 'utf8');
 
-    // 5. 替换CDN资源为相对路径，配合动态base标签使用
+    // 6. 替换CDN资源为相对路径，配合动态base标签使用
     const replaceCdnWithLocal = (html, cdnUrl, localFileName) => {
         const regex = new RegExp(cdnUrl.replace(/[.*+?^${}()|[$$\$$\/\\]/g, '\\$&'), 'g');
         return html.replace(regex, `libs/${localFileName}`);
@@ -135,7 +169,7 @@ async function processMarkmapFile(tempFilePath, htmlFilePath, fileName, fileType
     html = replaceCdnWithLocal(html, 'https://cdn.jsdelivr.net/npm/markmap-toolbar@0.18.12/dist/style.css', 'markmap-toolbar.css');
     html = replaceCdnWithLocal(html, 'https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/styles/default.min.css', 'highlightjs-default.css');
 
-    // 6. 在HTML头部添加base标签来处理相对路径
+    // 7. 在HTML头部添加base标签来处理相对路径
     html = html.replace('<head>', `<head>
     <script>
         // 动态设置base路径以支持不同的访问方式
@@ -150,12 +184,13 @@ async function processMarkmapFile(tempFilePath, htmlFilePath, fileName, fileType
         })();
     </script>`);
 
-    // 7. 写回修改后的 HTML
+    // 8. 写回修改后的 HTML
     fs.writeFileSync(htmlFilePath, html);
 
     res.json({
         markdown: `[查看 Markmap HTML](http://localhost/mind-html/${fileName}.html)`,
-        note: `HTML文件已生成，使用共享的静态资源，可以直接在浏览器中打开: ${htmlFilePath}`
+        note: `HTML文件已生成，使用共享的静态资源，可以直接在浏览器中打开: ${htmlFilePath}`,
+        mode: 'local-resources'
     });
 }
 

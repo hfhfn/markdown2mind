@@ -48,12 +48,27 @@ npm start
 
 **POST** `/markmap/json`
 
+**参数说明：**
+- `markdown`: Markdown 文本内容（必需）
+- `fileType`: 输出格式，默认 "html"
+- `offline`: 是否使用离线模式，默认 `true`（可选）
+
 ```bash
+# 默认离线模式（推荐）- 生成完全独立的HTML文件
 curl -X POST http://localhost:3000/markmap/json \
   -H "Content-Type: application/json" \
   -d '{
     "markdown": "# 我的思维导图\n\n## 第一章节\n- 要点1\n- 要点2\n\n## 第二章节\n- 功能A\n- 功能B",
     "fileType": "html"
+  }'
+
+# 显式控制模式
+curl -X POST http://localhost:3000/markmap/json \
+  -H "Content-Type: application/json" \
+  -d '{
+    "markdown": "# 我的思维导图\n\n## 第一章节\n- 要点1\n- 要点2\n\n## 第二章节\n- 功能A\n- 功能B",
+    "fileType": "html",
+    "offline": false
   }'
 ```
 
@@ -61,20 +76,91 @@ curl -X POST http://localhost:3000/markmap/json \
 
 **POST** `/markmap/upload`
 
+**参数说明：**
+- `markdownFile`: Markdown 文件（必需）
+- `fileType`: 输出格式，默认 "html"
+- `offline`: 是否使用离线模式，默认 `true`（可选）
+
 ```bash
+# 默认离线模式
 curl -X POST http://localhost:3000/markmap/upload \
   -F "markdownFile=@example.md" \
   -F "fileType=html"
+
+# 指定使用本地资源模式
+curl -X POST http://localhost:3000/markmap/upload \
+  -F "markdownFile=@example.md" \
+  -F "fileType=html" \
+  -F "offline=false"
 ```
 
-## 静态资源配置
+## 生成模式说明
+
+### 🚀 离线模式（默认，推荐）
+
+**特点：**
+- 使用 `markmap --offline` 参数
+- 所有CSS和JavaScript资源内联到HTML文件中
+- 生成完全独立的单个HTML文件
+- 无需外部依赖，可直接分发使用
+
+**优势：**
+- ✅ 单文件分发，便于共享
+- ✅ 完全离线使用
+- ✅ 加载速度快（无网络请求）
+- ✅ 文件自包含，不依赖服务器
+
+**适用场景：**
+- 文档分发和共享
+- 离线演示
+- 邮件附件
+- 单独使用的思维导图
+
+### 📦 本地资源模式（备用）
+
+**特点：**
+- 使用共享的 `libs` 目录存储静态资源
+- HTML文件引用相对路径的外部资源
+- 支持动态base路径，兼容文件和HTTP访问
+
+**优势：**
+- ✅ 多个HTML文件共享资源，节省空间
+- ✅ 可自定义静态资源
+- ✅ 支持nginx代理访问
+- ✅ 便于批量生成和管理
+
+**适用场景：**
+- 服务器部署
+- 批量生成大量文件
+- 需要自定义资源的场景
+
+### 模式控制
+
+**环境变量：**
+```bash
+# 默认启用离线模式
+MARKMAP_OFFLINE=true
+
+# 禁用离线模式，使用本地资源
+MARKMAP_OFFLINE=false
+```
+
+**API参数：**
+```json
+{
+  "markdown": "# 内容",
+  "offline": true   // true=离线模式, false=本地资源模式
+}
+```
+
+## 静态资源配置（本地资源模式）
 
 ### 自动资源管理
 
-服务会自动管理静态资源：
+当使用本地资源模式时，服务会自动管理静态资源：
 - 首次生成时，自动将 `src/libs/` 下的资源复制到 `output/markmap/html/libs/`
 - 所有生成的 HTML 文件共享同一个 `libs` 目录
-- 生成的 HTML 文件使用本地资源路径，支持离线使用
+- 生成的 HTML 文件使用相对路径，配合动态base标签支持多种访问方式
 
 ### 必需的静态资源文件
 
